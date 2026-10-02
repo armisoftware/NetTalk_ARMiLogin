@@ -1,0 +1,188 @@
+NetTalk_ARMiLogin  -  ingreso con huella / PIN (WebAuthn, "claves de paso") para servidores web NetTalk
+=====================================================================================================
+
+Permite que el usuario entre a una app web NetTalk con la huella, el PIN o el bloqueo de pantalla de su
+telefono o PC, en lugar de escribir usuario y contrasena. Es autonomo: no depende de Node ni de servicios
+externos. El servidor Clarion verifica la firma con el CNG de Windows (bcrypt.dll).
+
+Probado el 2026-10-01 con Clarion 11.1 + NetTalk: PC (Chrome/Edge, Windows Hello) en http://localhost y
+Android (Chrome) por HTTPS.
+
+
+1. ARCHIVOS
+-----------
+  Clarion\accessory\libsrc\win\NetTalk_ARMiLogin.inc / .clw     clase NetWebAuthnClass
+  Clarion\accessory\template\win\NetTalk_ARMiLogin.tpl / .tpw   templates (3 extensions)
+  NetTalk_ARMiLogin.js                                          script del navegador (en Clarion\accessory\libsrc\win;
+                                                                el template lo copia a la carpeta web\scripts del ejecutable al generar)
+  bcrypt.lib                                                    libreria de importacion de bcrypt.dll -> Clarion\accessory\lib
+  NetTalkPasskeys.tps                                           credenciales (lo crea el servidor solo)
+
+  Los archivos Clarion (.inc .clw .tpl .tpw) deben tener fin de linea CRLF. Si se editan con una
+  herramienta que escribe LF, el compilador los lee como una sola linea y da errores raros
+  ("Illegal data type", "Field not found").
+
+
+2. INSTALACION EN LA PC DE DESARROLLO (una sola vez)
+----------------------------------------------------
+  a) bcrypt.lib: con LibMaker (Clarion\bin\LibMaker.exe) crear la libreria de C:\Windows\System32\bcrypt.dll
+     y dejarla en Clarion\accessory\lib\bcrypt.lib (carpeta que el compilador ya busca). Sin ella el programa no linkea ("Unresolved External BCrypt...").
+  b) Registrar el template: IDE > Setup > Template Registry > Register... > NetTalk_ARMiLogin.tpl
+  c) Dejar NetTalk_ARMiLogin.js en Clarion\accessory\libsrc\win. NO hace falta copiarlo a mano a la app: el template lo copia
+     a la carpeta web\scripts del ejecutable cada vez que se genera la app (el redir de Clarion dice donde se graba el .exe, p.ej. .\Exe;
+     "Do not copy Web Folder"). Tambien verifica en cada generacion que exista bcrypt.lib y avisa si falta.
+
+
+3. CONFIGURACION EN LA APP
+--------------------------
+  3.1 Global  (Application > Global Properties > Extensions > Insert)
+      "NetTalk ARMi Login - activate (global)"
+        - Site name              nombre que muestra el telefono.
+        - Credential file        archivo TopSpeed de credenciales (por defecto NetTalkPasskeys.tps).
+        - Require fingerprint/PIN  dejarlo tildado (exige verificacion del usuario).
+        - Solapa Domain          RP id y Origin: EN BLANCO = se toman del Host de cada request. Completarlos
+                                 solo si hay un proxy/reenvio que cambia el Host (ver 6.3).
+
+  3.2 Procedimiento de login (NetWebForm)  ->  Extensions > Insert
+      "NetTalk ARMi Login - fingerprint button on the login form"
+        - Variable to receive the passkey code
+                                 variable que recibe el codigo guardado con la huella (p.ej. Loc:Login). Ese codigo
+                                 puede ser cualquier dato que identifique al usuario (nombre, e-mail, un ID interno).
+        - Page after login       expresion, p.ej.  'IndexPage'  (con comillas).
+        - Solapa Texts           textos del boton y de los avisos (todos pasan por p_web.Translate).
+      En el embeditor aparece un embed nuevo (Routines > ARMi Login):
+        "ARMi Login: fingerprint verified"
+      Ahi va el codigo que arma la sesion del usuario cuando entra con huella (variables de sesion, nivel,
+      etc.). OJO: la variable del prompt "Variable to receive the passkey code" (Loc:Login) solo vive mientras el
+      formulario procesa el OK del login. En este embed el codigo se lee con p_web.GetValue('loc:login') (el nombre de la variable en minusculas); el
+      template lo deja como valor web y como valor de sesion antes de llamar al embed. Es el mismo codigo que el login normal ejecuta despues de
+      p_web.ValidateLogin(), pero SIN la parte que compara la contrasena.
+
+  3.3 Pagina a la que se llega despues de loguearse  ->  Extensions > Insert
+      "NetTalk ARMi Login - offer to activate the fingerprint after login"
+        - Show the offer when    condicion, por defecto  p_web.GetSessionLoggedIn() = 1
+        - Value to store in the passkey
+                                 expresion que devuelve el dato que identifica al usuario; se guarda con la huella y el
+                                 login por huella lo recibe de vuelta. DEBE ser el dato con el que el embed busca al
+                                 usuario (PortIt/NetPack: un ID interno; si el login busca por e-mail, usar el e-mail).
+      Esta pagina es la que muestra la ventana "Activar huella en este dispositivo?" y atiende el alta.
+
+  Regenerar la app y compilar despues de configurar.
+
+
+4. COMO FUNCIONA
+----------------
+  Alta:   login normal -> la pagina de destino ofrece activar la huella (una vez por dispositivo) -> el
+          telefono crea una clave de paso -> el servidor guarda la clave publica en NetTalkPasskeys.tps.
+  Login:  boton "Login with fingerprint" (a la derecha de "Ingresar") -> el dispositivo firma un desafio
+          del servidor -> el servidor verifica la firma, ubica al usuario por la credencial, llama a
+          p_web.ValidateLogin(), ejecuta el embed y redirige.
+  Avisos: si el dispositivo nunca activo la huella, el boton muestra un aviso con "OK" y "Try anyway".
+          Si el dispositivo tiene una clave que el servidor ya no conoce, se muestra
+          "no longer registered on the server", se borra la marca local y la proxima vez que entre con
+          contrasena se vuelve a ofrecer activarla.
+
+  Que guarda el servidor (por cada credencial): identificador, usuario, CLAVE PUBLICA, contador de firmas,
+  dispositivo y fechas. NO guarda la huella, el PIN, claves privadas ni contrasenas.
+
+  Marcas en el navegador (localStorage del sitio):  netwebauthn_known, netwebauthn_declined.
+
+
+5. DEPLOY A PRODUCCION
+----------------------
+  Antes: la app de produccion necesita HTTPS con certificado valido y un nombre de dominio (no una IP).
+
+  a) Compilar la app en la PC donde esta bcrypt.lib y copiar al servidor el .exe nuevo.
+  b) Desplegar la carpeta web de la app (ya contiene web\scripts\NetTalk_ARMiLogin.js, copiado por el template al generar). Si se usan versiones comprimidas (.gz)
+     de los scripts, regenerarlas.
+  c) NO copiar ni sobrescribir NetTalkPasskeys.tps. Es dato de produccion, igual que los demas .tps. Si el
+     archivo ya existe se conserva; si no existe, el servidor lo crea vacio en el primer alta.
+     Incluirlo en el backup. Si se perdiera, nadie queda bloqueado: cada usuario entra con contrasena y
+     activa la huella de nuevo (ver 4).
+  d) La carpeta donde corre el exe tiene que permitir escritura (es donde se crea el .tps), o cambiar la
+     ruta en el prompt "Credential file" del global (por ejemplo a la carpeta de datos).
+  e) No hace falta instalar nada mas en el servidor: bcrypt.dll es parte de Windows (Windows 7 / Server 2008 R2 o posterior).
+  f) Probar con un telefono: entrar con contrasena, activar, cerrar sesion, entrar con el boton.
+
+  Las claves son por dominio: un dominio nuevo o distinto exige un alta nueva en cada dispositivo.
+  Las claves registradas en localhost o en un tunel de prueba no sirven en produccion.
+
+
+6. PROBLEMAS FRECUENTES
+-----------------------
+  6.1 El boton no aparece
+      - La pagina no es un contexto seguro: usar HTTPS o http://localhost. Con http://IP o http://nombre-de-pc
+        el navegador no permite WebAuthn (el flag "Insecure origins treated as secure" de Chrome muestra el
+        boton pero igual falla al activar).
+      - Una IP no sirve como dominio de la clave: hace falta un nombre de dominio.
+      - El navegador cargo una copia vieja del .js: recargar sin cache (Ctrl+F5), borrar cache del sitio.
+      - NetTalk_ARMiLogin.js no esta en web\scripts: regenerar la app para que el template lo copie (probar la direccion
+        /scripts/NetTalk_ARMiLogin.js). Si esta tildado "Do not copy Web Folder" hay que copiarlo a mano.
+  6.2 "Activate" no hace nada o falla
+      - Modo incognito de Chrome: no permite crear claves de paso en el dispositivo. Usar una pestana normal.
+      - El dispositivo no tiene bloqueo de pantalla / Windows Hello configurado.
+  6.3 Detras de un proxy o reenvio (IIS/ARR, tunel)
+      - Si el Host que llega al servidor NetTalk no es el dominio publico, completar en el global, solapa
+        Domain:  RP id = el dominio publico (expresion, p.ej. 'portit.com.ar')  y  Origin = la URL publica
+        con https (p.ej. 'https://portit.com.ar').
+  6.4 "Not registered on the server" en cada intento
+      - El servidor no tiene la credencial (archivo borrado o distinto). Entrar con contrasena y activar de
+        nuevo. Revisar que el .tps que lee el servidor sea el mismo de siempre.
+  6.5 Mensajes tecnicos
+      - En NetTalk_ARMiLogin.js, la linea  var cfg = {... debug: false }  ; ponerla en true solo para
+        diagnosticar: agrega al mensaje de error el nombre del error del navegador (p.ej. SecurityError).
+      - El servidor registra en el log de la app los rechazos:  "fingerprint login refused: <motivo>".
+
+
+7. NOTAS TECNICAS
+-----------------
+  - Algoritmo: ES256 (ECDSA P-256 + SHA-256). Claves "discoverable" (el dispositivo elige la clave del sitio,
+    no hace falta escribir el usuario). Attestation: ninguna.
+  - Verificaciones del servidor: tipo, desafio (de un solo uso, guardado en la sesion), origen, hash del
+    RP id, presencia y verificacion del usuario, firma, y contador de firmas creciente (detecta clones; los
+    autenticadores con contador 0 se aceptan).
+  - El navegador habla con la misma pagina que tiene la extension, con el parametro _wa_ :
+        lopts / lverify   (login, en el procedimiento de login)
+        ropts / rverify   (alta, en la pagina de destino)
+    Las respuestas son JSON chico ({"ok":1,...}). El servidor responde con p_web.SendJSON.
+  - El script agrega _ajax_=1 a sus pedidos: asi NetTalk responde solo el JSON (unos 85 bytes) y no arma la pagina de
+    login completa (antes cada respuesta traia ademas unos 12 KB de HTML). Sin ese parametro NetTalk envuelve la
+    respuesta en la pagina.
+  - En el codigo generado, el HTML/JS que pasa por ParseHTML necesita "{{" para una llave literal; el JSON
+    enviado con SendJSON usa "{" simple.
+  - Para probar la clase sin AppGen: un proyecto minimo que incluya NetTalk_ARMiLogin.inc/.clw y compile
+    con MSBuild (SoftVelocity.Build.Clarion.targets). Ya se probo registro, login, desafio erroneo, firma
+    alterada, repeticion, credencial desconocida y dominio equivocado con firmas P-256 reales.
+
+8. MULTI-DLL
+------------
+  En un programa multi-DLL la clase NetWebAuthnClass la compila y exporta UNA sola DLL (la raiz); el resto de las DLL y el
+  EXE la importan. La extension global tiene la solapa "Multi-DLL" para decirlo. Agregar la extension global a TODAS las
+  apps del programa y configurar cada una:
+
+    App                              Multi-DLL program   Export the class    Copy the .js to the web folder
+    -------------------------------  ------------------  ------------------  -------------------------------
+    Programa de un solo EXE          no                  -                   si
+    DLL raiz (exporta la clase)      si                  si                  no (nota 1)
+    Otras DLL                        si                  no                  no (nota 1)
+    EXE                              si                  -                   si, si es el que corre el servidor web
+
+    Nota 1: "Copy NetTalk_ARMiLogin.js to the web folder" debe quedar tildado solo en la app que ejecuta el servidor web NetTalk.
+
+  El template genera en cada app dos constantes de proyecto que lee NetTalk_ARMiLogin.inc:
+    NetTalkARMiLoginLinkMode / NetTalkARMiLoginDllMode
+      programa simple o DLL raiz : 1 / 0   (la clase se compila dentro de la app)
+      otras DLL y EXE            : 0 / 1   (la clase se importa de la DLL raiz)
+  La DLL raiz recibe ademas, en su archivo .exp, los 21 nombres de la clase (via el embed %DllExportList).
+  bcrypt.lib solo se agrega al proyecto de la app que compila la clase (programa simple o DLL raiz).
+
+  Si se usa NetTalk_ARMiLogin.inc fuera del template hay que definir esas dos constantes a mano: no tienen valor por defecto
+  a proposito (un valor por defecto pisaria el del proyecto).
+
+  Verificado con el compilador y el enlazador de Clarion 11.1: un programa simple (la clase dentro del EXE) y una DLL raiz que
+  exporta la clase mas un EXE que la importa y ejecuta registro, ingreso, firma falsa y repeticion con los resultados esperados.
+  SIN PROBAR todavia con AppGen real: generar una solucion multi-DLL y comprobar que el .exp de la DLL raiz y las constantes
+  de cada proyecto salen como se describe.
+
+  Si se agrega, quita o cambia un metodo de la clase, hay que regenerar la lista de nombres del grupo %ARMiExports en el .tpw
+  (llamar a todos los metodos desde un programa de prueba, compilar con archivo MAP y copiar los nombres NETWEBAUTHNCLASS).

@@ -1,0 +1,10 @@
+*.tps
+*.exe
+*.dll
+*.map
+*.pem
+*.ini
+log/
+certificates/
+web/
+~$*

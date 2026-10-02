@@ -1,0 +1,103 @@
+﻿<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{FEDAFD83-D7AF-4D93-984F-B6AE49C71278}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">Win32</Platform>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>NtLoginDemo</AssemblyName>
+    <OutputName>NtLoginDemo</OutputName>
+    <DefineConstants>netshowsend=&gt;1%3b_STRINGTHEORY_=&gt;0%3b_NT10_=&gt;1%3b_NT11_=&gt;1%3b_NT12_=&gt;1%3b_NT14_=&gt;1%3b_NT_=&gt;1%3bNETTALKLOG=&gt;1%3bStringTheoryLinkMode=&gt;1%3bStringTheoryDllMode=&gt;0%3bMD5=&gt;0%3bjFilesLinkMode=&gt;1%3bjFilesDllMode=&gt;0%3b_JFILES_=&gt;1%3bReflectionLM=&gt;1%3bReflectionDM=&gt;0%3b_ABCDllMode_=&gt;0%3b_ABCLinkMode_=&gt;1%3b_NetTalkDllMode_=&gt;0%3b_NetTalkLinkMode_=&gt;1</DefineConstants>
+    <Model>Dll</Model>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>True</DebugSymbols>
+    <DebugType>Full</DebugType>
+    <vid>full</vid>
+    <check_stack>True</check_stack>
+    <check_index>True</check_index>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>False</DebugSymbols>
+    <DebugType>None</DebugType>
+    <vid>off</vid>
+    <check_stack>False</check_stack>
+    <check_index>False</check_index>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="NtLoginDemo.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo001.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo002.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo003.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo004.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo005.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo006.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo007.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NTLOGINDEMO_BC.CLW">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo_BC0.CLW">
+      <Generated>true</Generated>
+    </Compile>
+    <Compile Include="NtLoginDemo_nw.clw">
+      <Generated>true</Generated>
+    </Compile>
+    <None Include="caroot.pem">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="dh2048.pem">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="ecec.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="libcrypto-3.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="libssl-3.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="OpenSSL.Exe">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+    <None Include="zlibwapi.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Generated>True</Generated>
+      <ProjectGenerated>True</ProjectGenerated>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="bcrypt.lib" />
+    <Library Include="clanet.lib" />
+    <FileDriver Include="DOS" />
+    <FileDriver Include="TOPSPEED" />
+  </ItemGroup>
+  <Import Project="$(ClarionBinPath)\SoftVelocity.Build.Clarion.targets" />
+</Project>

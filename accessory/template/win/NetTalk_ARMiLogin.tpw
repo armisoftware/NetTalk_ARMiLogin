@@ -1,0 +1,490 @@
+#!------------------------------------------------------------------------------
+#!  NetTalk_ARMiLogin.tpw  -  see NetTalk_ARMiLogin.tpl
+#!
+#!  REMEMBER when editing:
+#!    - HTML/JS appended to the page packet goes through NetTalk ParseHTML, where  {name}  is a
+#!      substitution, so a literal  {  must be written  {{  (NetTalk does the same in its own templates).
+#!    - JSON sent with p_web.SendString is NOT parsed: use a plain  {
+#!    - a literal  %  in an emitted line must be written  %%   (none are used here)
+#!------------------------------------------------------------------------------
+#EXTENSION(NetTalk_ARMiLogin_Global,'NetTalk ARMi Login - activate (global)'),APPLICATION
+#!------------------------------------------------------------------------------
+#SHEET
+  #TAB('General')
+    #DISPLAY('Declares the NetWebAuthn class and its credential store.')
+    #DISPLAY('Requires HTTPS (or localhost): browsers refuse WebAuthn otherwise.')
+    #DISPLAY('NetTalk_ARMiLogin.js is copied to your web\scripts folder each time the app is generated.')
+    #DISPLAY('')
+    #PROMPT('&Disable this template',CHECK),%WADisable,DEFAULT(0),AT(10)
+    #PROMPT('Site name shown by the phone:',@s60),%WARpName,DEFAULT('My Web Application'),REQ
+    #PROMPT('Credential file (TopSpeed):',@s250),%WACredFile,DEFAULT('NetTalkPasskeys.tps'),REQ
+    #PROMPT('Require fingerprint / PIN (user verification)',CHECK),%WARequireUV,DEFAULT(1),AT(10)
+  #ENDTAB
+  #TAB('Domain')
+    #DISPLAY('Leave both blank to take them from the browser request:')
+    #DISPLAY('  RP id  = host name without port,   origin = https://host[:port]')
+    #DISPLAY('Fill them (Clarion expressions, e.g. a quoted string) when the server')
+    #DISPLAY('sits behind a proxy, or the public name differs from the Host header.')
+    #PROMPT('RP id (domain):',EXPR),%WARpId
+    #PROMPT('Expected origin:',EXPR),%WAOrigin
+  #ENDTAB
+  #TAB('Multi-DLL')
+    #DISPLAY('In a Multi-DLL program the NetWebAuthn class is compiled and exported by ONE')
+    #DISPLAY('DLL (the root DLL); every other DLL and the EXE import it from there.')
+    #DISPLAY('Add this global extension to EVERY app of the program and set it up here.')
+    #DISPLAY('')
+    #BOXED('NetWebAuthn class')
+      #PROMPT('This is part of a Multi-DLL program',CHECK),%WAMultiDLL,DEFAULT(%ProgramExtension='DLL'),AT(10)
+      #ENABLE(%WAMultiDLL=1)
+        #ENABLE(%ProgramExtension='DLL')
+          #PROMPT('Export the NetWebAuthn class from this DLL',CHECK),%WARootDLL,AT(10)
+        #ENDENABLE
+      #ENDENABLE
+    #ENDBOXED
+    #BOXED('Web folder')
+      #PROMPT('Copy NetTalk_ARMiLogin.js to the web folder when generating',CHECK),%WACopyJs,DEFAULT(%ProgramExtension<>'DLL'),AT(10)
+      #DISPLAY('Leave it checked only in the app that runs the NetTalk web server.')
+    #ENDBOXED
+  #ENDTAB
+#ENDSHEET
+#!------------------------------------------------------------------------------
+#AT(%CustomGlobalDeclarations),WHERE(%WADisable=0)
+  #IF(%WAMultiDLL=0 OR %WARootDLL=1)
+  #PROJECT('bcrypt.lib')
+  #ENDIF
+  #INSERT(%ARMiDefines,1)
+#ENDAT
+#!------------------------------------------------------------------------------
+#!  Multi-project defines (the same constants, written for the other project formats)
+#AT(%mpDefineAll),WHERE(%WADisable=0)
+#INSERT(%ARMiDefines,2)
+#ENDAT
+#AT(%mpDefineAll7),WHERE(%WADisable=0)
+#INSERT(%ARMiDefines,3)
+#ENDAT
+#!------------------------------------------------------------------------------
+#!  Root DLL: export the class (names verified against the linker map, see %ARMiExports)
+#AT(%DllExportList),WHERE(%ProgramExtension = 'DLL' AND %WAMultiDLL = 1 AND %WARootDLL = 1 AND %WADisable = 0)
+#INSERT(%ARMiExports)
+#ENDAT
+#!------------------------------------------------------------------------------
+#!  After every generation: make sure bcrypt.lib is installed and copy NetTalk_ARMiLogin.js
+#!  (installed in <Clarion>\accessory\libsrc\win) into the web\scripts folder of this app,
+#!  the same way NetTalk copies its own web files.
+#AT(%AfterGeneratedApplication),WHERE(%WADisable=0)
+  #INSERT(%ARMiDeploy)
+#ENDAT
+#!------------------------------------------------------------------------------
+#AT(%AfterGlobalIncludes),WHERE(%WADisable=0)
+  INCLUDE('NetTalk_ARMiLogin.inc'),ONCE
+#ENDAT
+#!------------------------------------------------------------------------------
+#!------------------------------------------------------------------------------
+#!  Shared pieces used by the procedure extensions
+#!  WAAuth is a LOCAL object of each procedure (one per request = thread safe)
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiDeploy)
+  #IF(NOT VAREXISTS(%WARoot))
+    #DECLARE(%WARoot)
+    #DECLARE(%WADest)
+    #DECLARE(%WAScripts)
+    #DECLARE(%WASrc)
+    #DECLARE(%WABat)
+    #DECLARE(%WAWeb0)
+    #DECLARE(%WAExeDir)
+    #DECLARE(%WAProbe)
+    #DECLARE(%WAFull)
+    #DECLARE(%WACmd)
+  #ENDIF
+  #SET(%WARoot,%CWRoot)
+  #IF(SUB(%WARoot,LEN(%WARoot),1) <> '\')
+    #SET(%WARoot,%WARoot & '\')
+  #ENDIF
+  #IF(%WAMultiDLL=0 OR %WARootDLL=1)
+    #IF(NOT FILEEXISTS(%WARoot & 'accessory\lib\bcrypt.lib') AND NOT FILEEXISTS(%WARoot & 'lib\bcrypt.lib'))
+      #ERROR('NetTalk ARMi Login: bcrypt.lib not found in ' & %WARoot & 'accessory\lib. Reinstall NetTalk ARMi Login.')
+    #ENDIF
+  #ENDIF
+  #IF(%WACopyJs=0)
+    #RETURN
+  #ENDIF
+  #IF(VAREXISTS(%NoWebFolder) AND %NoWebFolder)
+    #MESSAGE('NetTalk ARMi Login: "Do not copy Web Folder" is set; copy NetTalk_ARMiLogin.js to your web\scripts folder by hand.',2)
+    #RETURN
+  #ENDIF
+  #! Web folder name: the one NetTalk uses ((To) Web Folder), 'web' by default.
+  #IF(VAREXISTS(%gNetWebToFolder) AND %gNetWebToFolder <> '')
+    #SET(%WAWeb0,%gNetWebToFolder)
+  #ELSE
+    #SET(%WAWeb0,'web')
+  #ENDIF
+  #IF(SUB(%WAWeb0,1,1) = '''')
+    #SET(%WAWeb0,SUB(%WAWeb0,2,LEN(CLIP(%WAWeb0)) - 2))
+  #ENDIF
+  #! The NetTalk server looks for that folder relative to the folder where the .exe runs, and the Clarion
+  #! redirection file decides where the executable is written (*.exe = .\Exe ...). Ask the redirection:
+  #! create a probe file with the extension of this app's output and read where it landed.
+  #INSERT(%ARMiFindExeDir)
+  #IF(INSTRING(':',%WAWeb0,1,1) OR SUB(%WAWeb0,1,1) = '\')
+    #SET(%WADest,%WAWeb0)
+  #ELSE
+    #SET(%WADest,%WAExeDir & '\' & %WAWeb0)
+  #ENDIF
+  #IF(VAREXISTS(%ScriptsDir) AND %ScriptsDir <> '')
+    #SET(%WAScripts,SUB(%ScriptsDir,2,LEN(CLIP(%ScriptsDir)) - 2))
+  #ELSE
+    #SET(%WAScripts,'scripts')
+  #ENDIF
+  #SET(%WASrc,%WARoot & 'accessory\libsrc\win\NetTalk_ARMiLogin.js')
+  #IF(NOT FILEEXISTS(%WASrc))
+    #ERROR('NetTalk ARMi Login: ' & %WASrc & ' not found. Reinstall NetTalk ARMi Login.')
+    #RETURN
+  #ENDIF
+  #SET(%WABat,'ARMiLoginCopy.Bat')
+  #CREATE(%WABat)
+if not exist "%WADest\%WAScripts" mkdir "%WADest\%WAScripts"
+copy /Y "%WASrc" "%WADest\%WAScripts\NetTalk_ARMiLogin.js" > nul
+  #CLOSE(%WABat)
+  #SET(%WAFull,FULLNAME(%WABat))
+  #SET(%WACmd,'cmd.exe /c ""' & %WAFull & '""')
+  #RUN(%WACmd),WAIT
+  #REMOVE(%WABat)
+  #MESSAGE('NetTalk ARMi Login: NetTalk_ARMiLogin.js copied to ' & %WADest & '\' & %WAScripts,2)
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiFindExeDir)
+  #! Sets %WAExeDir to the folder where the redirection file writes this app's EXE / DLL.
+  #! A file created with #CREATE is placed by the redirection rule of its extension, so the probe tells us.
+  #SET(%WAProbe,'ARMiLoginProbe.' & LOWER(%ProgramExtension))
+  #CREATE(%WAProbe)
+x
+  #CLOSE(%WAProbe)
+  #SET(%WAFull,FULLNAME(%WAProbe))
+  #REMOVE(%WAProbe)
+  #IF(%WAFull = '')
+    #SET(%WAExeDir,'.')
+  #ELSE
+    #SET(%WAExeDir,SUB(%WAFull,1,LEN(CLIP(%WAFull)) - LEN(TAILNAME(%WAFull)) - 1))
+  #ENDIF
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiDefines,%pWhere),AUTO
+  #! Where the class lives, as two project constants read by NetTalk_ARMiLogin.inc:
+  #!   mono app / root DLL that exports the class : LinkMode=1 DllMode=0   (class compiled into this app)
+  #!   local library                              : LinkMode=0 DllMode=0
+  #!   DLL or EXE that imports it from the root   : LinkMode=0 DllMode=1
+  #IF(%pWhere=1)  #! inside the app (Clarion 7 and later)
+    #IF(%WAMultiDLL=0 OR %WARootDLL=1)
+      #PDEFINE('NetTalkARMiLoginLinkMode',1)
+      #PDEFINE('NetTalkARMiLoginDllMode',0)
+    #ELSIF(%ApplicationLocalLibrary)
+      #PDEFINE('NetTalkARMiLoginLinkMode',0)
+      #PDEFINE('NetTalkARMiLoginDllMode',0)
+    #ELSE
+      #PDEFINE('NetTalkARMiLoginLinkMode',0)
+      #PDEFINE('NetTalkARMiLoginDllMode',1)
+    #ENDIF
+  #ELSIF(%pWhere=2)  #! Clarion 6 and earlier PRJ file
+    #IF(%WAMultiDLL=0 OR %WARootDLL=1)
+%#pragma define(NetTalkARMiLoginLinkMode=>1)
+%#pragma define(NetTalkARMiLoginDllMode=>0)
+    #ELSIF(%ApplicationLocalLibrary)
+%#pragma define(NetTalkARMiLoginLinkMode=>0)
+%#pragma define(NetTalkARMiLoginDllMode=>0)
+    #ELSE
+%#pragma define(NetTalkARMiLoginLinkMode=>0)
+%#pragma define(NetTalkARMiLoginDllMode=>1)
+    #ENDIF
+  #ELSIF(%pWhere=3)  #! Clarion 7 and later cwproj file
+    #IF(%WAMultiDLL=0 OR %WARootDLL=1)
+%%3bNetTalkARMiLoginLinkMode=&gt;1%%3bNetTalkARMiLoginDllMode=&gt;0
+    #ELSIF(%ApplicationLocalLibrary)
+%%3bNetTalkARMiLoginLinkMode=&gt;0%%3bNetTalkARMiLoginDllMode=&gt;0
+    #ELSE
+%%3bNetTalkARMiLoginLinkMode=&gt;0%%3bNetTalkARMiLoginDllMode=&gt;1
+    #ENDIF
+  #ENDIF
+#!------------------------------------------------------------------------------
+#!  Export list of NetWebAuthnClass for the root DLL (.exp file).
+#!  These are the mangled linker names of the 21 methods. They were read from the linker map of a
+#!  program that calls every method, and checked by building a root DLL + an EXE that imports them.
+#!  If a method is added, removed or its parameters change in NetTalk_ARMiLogin.inc, regenerate this list
+#!  (call every method from a test program, build with a map file, copy the NETWEBAUTHNCLASS names).
+#GROUP(%ARMiExports)
+  ; exporting the NetWebAuthnClass class (NetTalk ARMi Login)
+  CHECKAUTHDATA@F16NETWEBAUTHNCLASSsblRd   @?
+  CHECKCLIENTDATA@F16NETWEBAUTHNCLASSsbsbsb   @?
+  DERTORAW@F16NETWEBAUTHNCLASSsblRsb   @?
+  IMPORTPUBLICKEY@F16NETWEBAUTHNCLASSsblRlRl   @?
+  SETERROR@F16NETWEBAUTHNCLASSlsb   @?
+  DELETECREDENTIALS@F16NETWEBAUTHNCLASSsb   @?
+  COUNTCREDENTIALS@F16NETWEBAUTHNCLASSsb   @?
+  LISTCREDENTIALIDS@F16NETWEBAUTHNCLASSsb   @?
+  CLOSESTORE@F16NETWEBAUTHNCLASS   @?
+  OPENSTORE@F16NETWEBAUTHNCLASS   @?
+  VERIFYASSERTION@F16NETWEBAUTHNCLASSsbsbsbsbsbRsb   @?
+  VERIFYREGISTRATION@F16NETWEBAUTHNCLASSsbsbsbsbsbsbsb   @?
+  LOGINOPTIONS@F16NETWEBAUTHNCLASSsb   @?
+  REGISTRATIONOPTIONS@F16NETWEBAUTHNCLASSsbsb   @?
+  SHA256@F16NETWEBAUTHNCLASSsblRsb   @?
+  JSONFIELD@F16NETWEBAUTHNCLASSsbsb   @?
+  JSONSTRING@F16NETWEBAUTHNCLASSsb   @?
+  BASE64URLDECODE@F16NETWEBAUTHNCLASSsbRsb   @?
+  BASE64URLENCODE@F16NETWEBAUTHNCLASSsbl   @?
+  NEWCHALLENGE@F16NETWEBAUTHNCLASS   @?
+  INIT@F16NETWEBAUTHNCLASSsbsbsbsbUc   @?
+  ; end of NetTalk ARMi Login exports
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiData)
+WAAuth                       CLASS(NetWebAuthnClass)
+                             END
+waPacket                     StringTheory
+waOut                        STRING(1500)
+waHost                       STRING(256)
+waPos                        LONG
+waRpId                       STRING(256)
+waScheme                     STRING(8)
+waOrigin                     STRING(300)
+waChal                       STRING(64)
+waUser                       STRING(255)
+waDev                        STRING(60)
+waMode                       STRING(12)
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiInit)
+  waHost = clip(p_web.RequestHost)
+  waPos  = instring(':',waHost,1,1)
+  waRpId = waHost
+  if waPos > 0 then waRpId = waHost[1 : waPos - 1].
+  #IF(%WARpId)
+  waRpId = %WARpId
+  #ENDIF
+  if sub(lower(clip(waRpId)),1,9) = 'localhost' then waScheme = 'http://' else waScheme = 'https://'.
+  waOrigin = clip(waScheme) & clip(waHost)
+  #IF(%WAOrigin)
+  waOrigin = %WAOrigin
+  #ENDIF
+  #IF(%WARequireUV)
+  WAAuth.Init(clip(waRpId),'%WARpName',clip(waOrigin),'%WACredFile',1)
+  #ELSE
+  WAAuth.Init(clip(waRpId),'%WARpName',clip(waOrigin),'%WACredFile',0)
+  #ENDIF
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiReply)
+  waPacket.SetValue(clip(waOut))
+  p_web.ReplyContentType  = p_web.GetContentType('.json')
+  p_web.ReplyContentFixed = true
+  p_web.SetValue('_wa_done_','1')                  ! NetTalk may call the procedure again: answer only once
+  p_web.SendJSON(waPacket)                        ! also marks header and footer as sent: no page around the JSON
+#!------------------------------------------------------------------------------
+#GROUP(%ARMiSetPage)
+  #IF(NOT VAREXISTS(%WAPage))
+    #DECLARE(%WAPage)
+  #ENDIF
+  #IF(%ProcedureTemplate = 'NetWebForm' AND %webPageName)
+    #SET(%WAPage,%webPageName)
+  #ELSE
+    #SET(%WAPage,%Procedure)
+  #ENDIF
+#!------------------------------------------------------------------------------
+#!==============================================================================
+#EXTENSION(NetTalk_ARMiLogin_Form,'NetTalk ARMi Login - fingerprint button on the login form'),PROCEDURE,REQ(NetTalk_ARMiLogin_Global)
+#!==============================================================================
+#SHEET
+  #TAB('General')
+    #DISPLAY('Add to the NetWebForm that logs the user in.')
+    #DISPLAY('The passkey code saved with the fingerprint is handed back in the variable below.')
+    #DISPLAY('It can be anything that identifies the user (user name, e-mail, internal id...).')
+    #DISPLAY('The variable only lives while the form is processed: in the "fingerprint verified"')
+    #DISPLAY('embed read the code with p_web.GetValue(<variable name in lower case>),')
+    #DISPLAY('for example p_web.GetValue(''loc:login'').')
+    #DISPLAY('')
+    #PROMPT('Variable to receive the passkey code:',FIELD),%WALoginField,REQ
+    #PROMPT('Page after login (expression):',EXPR),%WANextPage,DEFAULT('''IndexPage'''),REQ
+    #PROMPT('Show the button only on devices where it was activated',CHECK),%WAOnlyKnown,DEFAULT(0),AT(10)
+    #PROMPT('Ask for the fingerprint as soon as the page opens (known devices)',CHECK),%WAAutoStart,DEFAULT(0),AT(10)
+  #ENDTAB
+  #TAB('Texts')
+    #PROMPT('Button:',@s80),%WATxtButton,DEFAULT('Login with fingerprint')
+    #PROMPT('Login failed:',@s120),%WATxtLoginFailed,DEFAULT('The fingerprint could not be verified. Use your user and password.')
+    #PROMPT('Not supported:',@s120),%WATxtUnsupported,DEFAULT('This browser or connection does not support fingerprint login (HTTPS is required).')
+    #PROMPT('Not activated yet:',@s200),%WATxtNotActive,DEFAULT('Fingerprint login is not activated on this device yet. Log in with your user and password and you will be offered to activate it.')
+    #PROMPT('Not registered on the server:',@s200),%WATxtNotRegistered,DEFAULT('This fingerprint is no longer registered on the server. Log in with your user and password and activate it again.')
+    #PROMPT('Button OK:',@s40),%WATxtOk,DEFAULT('OK')
+    #PROMPT('Button try anyway:',@s40),%WATxtTryAnyway,DEFAULT('Try anyway')
+  #ENDTAB
+#ENDSHEET
+#!------------------------------------------------------------------------------
+#AT(%DataSection),WHERE(%WADisable=0)
+#INSERT(%ARMiData)
+#ENDAT
+#!------------------------------------------------------------------------------
+#!  The browser talks to this same page with  _wa_=lopts / lverify
+#AT(%ProcessedCode),PRIORITY(500),WHERE(%WADisable=0)
+  if p_web.GetValue('_wa_') <> ''
+    if p_web.GetValue('_wa_done_') = '' then do ARMiLoginService.
+    return 0
+  end
+#ENDAT
+#!------------------------------------------------------------------------------
+#AT(%AfterSlashFormTag),WHERE(%WADisable=0 AND %ProcedureTemplate = 'NetWebForm' AND %WALoginField <> '')
+  #INSERT(%ARMiSetPage)
+  %gPacket.append(p_web.AddScript('NetTalk_ARMiLogin.js'))
+  %gPacket.append('<div id="armi_wa_box" style="display:none;text-align:center;margin-top:14px">' & |
+    '<button type="button" id="armi_wa_btn" class="nt-button ui-button">' & |
+    p_web.Translate('%WATxtButton') & '</button></div>' & p_web.CRLF)
+  %gPacket.append('<script type="text/javascript">' & p_web.CRLF & |
+    '(function() {{ var tries = 0; function armiStart() {{' & |
+    ' if (!window.netwebauthn) {{ if (++tries !== 100) {{ setTimeout(armiStart, 50); } return; }' & |
+    ' netwebauthn.init({{url:' & WAAuth.JsonString(p_web._MakeUrl('%WAPage')) & |
+    ',next:' & WAAuth.JsonString(p_web._MakeUrl(%WANextPage)) & |
+    ',texts:{{loginFailed:' & WAAuth.JsonString(p_web.Translate('%WATxtLoginFailed')) & |
+    ',unsupported:' & WAAuth.JsonString(p_web.Translate('%WATxtUnsupported')) & |
+    ',notActive:' & WAAuth.JsonString(p_web.Translate('%WATxtNotActive')) & |
+    ',notRegistered:' & WAAuth.JsonString(p_web.Translate('%WATxtNotRegistered')) & |
+    ',ok:' & WAAuth.JsonString(p_web.Translate('%WATxtOk')) & |
+    ',tryAnyway:' & WAAuth.JsonString(p_web.Translate('%WATxtTryAnyway')) & '}});' & |
+    ' var box = document.getElementById(<39>armi_wa_box<39>);' & |
+    ' var btn = document.getElementById(<39>armi_wa_btn<39>);' & |
+    ' if (!netwebauthn.supported()) {{ return; }' & |
+  #IF(%WAOnlyKnown)
+    ' if (!netwebauthn.known()) {{ return; }' & |
+  #ENDIF
+    ' netwebauthn.placeButton(box, btn, <39>%Procedure_saveset<39>);' & |
+    ' btn.onclick = function() {{ netwebauthn.login(); };' & |
+  #IF(%WAAutoStart)
+    ' if (netwebauthn.known()) {{ netwebauthn.login(); }' & |
+  #ENDIF
+    '} armiStart(); })();' & p_web.CRLF & '</script>' & p_web.CRLF)
+#ENDAT
+#!------------------------------------------------------------------------------
+#AT(%ProcedureRoutines),WHERE(%WADisable=0)
+ARMiLoginService  Routine
+  #INSERT(%ARMiInit)
+  waMode = lower(p_web.GetValue('_wa_'))
+  case waMode
+  of 'lopts'
+    waChal = WAAuth.NewChallenge()
+    p_web.SetSessionValue('_wa_chal_',clip(waChal))
+    waOut = WAAuth.LoginOptions(clip(waChal))
+  of 'lverify'
+    waChal = p_web.GetSessionValue('_wa_chal_')
+    p_web.DeleteSessionValue('_wa_chal_')            ! a challenge is good for one attempt only
+    if WAAuth.VerifyAssertion(clip(waChal),clip(p_web.GetValue('id')),clip(p_web.GetValue('cdj')),clip(p_web.GetValue('ad')),clip(p_web.GetValue('sig')),waUser) = WA:Ok
+      %WALoginField = clip(waUser)                    ! the local variable only lives during this request ...
+      p_web.SetValue(lower('%WALoginField'),clip(waUser))          ! ... so also leave it as a web value: p_web.GetValue('loc:login')
+      p_web.SetSessionValue(lower('%WALoginField'),clip(waUser))   ! ... and as a session value, like a normal login does
+      p_web.ValidateLogin()                           ! marks the session as logged in
+      p_web.AddLog('fingerprint login ' & clip(waUser))
+#EMBED(%WebAuthnLoginOK,'ARMi Login: fingerprint verified - read the passkey code with p_web.GetValue (variable name in lower case)'),TREE('Routines|ARMi Login|1 Fingerprint login verified')
+      waOut = '{"ok":1,"next":' & WAAuth.JsonString(p_web._MakeUrl(%WANextPage)) & '}'
+    else
+      p_web.AddLog('fingerprint login refused: ' & WAAuth.LastErrorText)
+      if WAAuth.LastError = WA:Err:Unknown
+        waOut = '{"ok":0,"err":"unknown"}'      ! the device has a passkey the server does not know
+      else
+        waOut = '{"ok":0,"err":"auth"}'
+      end
+    end
+  else
+    waOut = '{"ok":0,"err":"mode"}'
+  end
+  #INSERT(%ARMiReply)
+#ENDAT
+#!==============================================================================
+#EXTENSION(NetTalk_ARMiLogin_Offer,'NetTalk ARMi Login - offer to activate the fingerprint after login'),PROCEDURE,REQ(NetTalk_ARMiLogin_Global)
+#!==============================================================================
+#SHEET
+  #TAB('General')
+    #DISPLAY('Add to the page the user lands on after logging in (NetWebPage or NetWebForm).')
+    #DISPLAY('Offers once per device: "Activate fingerprint login on this device?"')
+    #DISPLAY('')
+    #PROMPT('Show the offer when (expression):',EXPR),%WAOfferCondition,DEFAULT('p_web.GetSessionLoggedIn() = 1'),REQ
+    #PROMPT('Value to store in the passkey:',EXPR),%WAUserKey,DEFAULT('p_web.GetSessionValue(''loc:login'')'),REQ
+    #DISPLAY('This code is saved with the fingerprint. When the fingerprint is accepted, the login')
+    #DISPLAY('procedure receives it (user name, e-mail, internal id... whatever identifies the user).')
+  #ENDTAB
+  #TAB('Texts')
+    #PROMPT('Question:',@s120),%WATxtOffer,DEFAULT('Activate fingerprint login on this device?')
+    #PROMPT('Yes:',@s40),%WATxtYes,DEFAULT('Activate')
+    #PROMPT('Later:',@s40),%WATxtLater,DEFAULT('Not now')
+    #PROMPT('Never:',@s40),%WATxtNever,DEFAULT('Do not ask again')
+    #PROMPT('Done:',@s120),%WATxtEnrollOk,DEFAULT('Fingerprint login activated.')
+    #PROMPT('Failed:',@s120),%WATxtEnrollFailed,DEFAULT('The fingerprint could not be activated.')
+    #PROMPT('Already activated:',@s120),%WATxtAlreadyActive,DEFAULT('Fingerprint login is already activated on this device.')
+    #PROMPT('Not supported:',@s120),%WATxtOfferUnsupported,DEFAULT('This browser or connection does not support fingerprint login.')
+  #ENDTAB
+#ENDSHEET
+#!------------------------------------------------------------------------------
+#AT(%DataSection),WHERE(%WADisable=0)
+#INSERT(%ARMiData)
+#ENDAT
+#!------------------------------------------------------------------------------
+#!  The browser talks to this same page with  _wa_=ropts / rverify  (needs a logged in session)
+#AT(%ProcessedCode),PRIORITY(500),WHERE(%WADisable=0)
+  if p_web.GetValue('_wa_') <> ''
+    if p_web.GetValue('_wa_done_') = '' then do ARMiEnrollService.
+  #IF(%ProcedureTemplate = 'NetWebForm')
+    return 0
+  #ELSE
+    return
+  #ENDIF
+  end
+#ENDAT
+#!------------------------------------------------------------------------------
+#AT(%ProcessedCode),PRIORITY(7000),WHERE(%WADisable=0 AND %ProcedureTemplate <> 'NetWebForm')
+  if %WAOfferCondition
+    do ARMiOffer
+  end
+#ENDAT
+#AT(%AfterSlashFormTag),WHERE(%WADisable=0 AND %ProcedureTemplate = 'NetWebForm')
+  if %WAOfferCondition
+    do ARMiOffer
+  end
+#ENDAT
+#!------------------------------------------------------------------------------
+#AT(%ProcedureRoutines),WHERE(%WADisable=0)
+ARMiOffer  Routine
+  #INSERT(%ARMiSetPage)
+  %gPacket.append(p_web.AddScript('NetTalk_ARMiLogin.js'))
+  %gPacket.append('<script type="text/javascript">' & p_web.CRLF & |
+    '(function() {{ var tries = 0; function armiStart() {{' & |
+    ' if (!window.netwebauthn) {{ if (++tries !== 100) {{ setTimeout(armiStart, 50); } return; }' & |
+    ' netwebauthn.init({{url:' & WAAuth.JsonString(p_web._MakeUrl('%WAPage')) & |
+    ',texts:{{offerText:' & WAAuth.JsonString(p_web.Translate('%WATxtOffer')) & |
+    ',offerYes:' & WAAuth.JsonString(p_web.Translate('%WATxtYes')) & |
+    ',offerLater:' & WAAuth.JsonString(p_web.Translate('%WATxtLater')) & |
+    ',offerNever:' & WAAuth.JsonString(p_web.Translate('%WATxtNever')) & |
+    ',enrollOk:' & WAAuth.JsonString(p_web.Translate('%WATxtEnrollOk')) & |
+    ',enrollFailed:' & WAAuth.JsonString(p_web.Translate('%WATxtEnrollFailed')) & |
+    ',alreadyActive:' & WAAuth.JsonString(p_web.Translate('%WATxtAlreadyActive')) & |
+    ',unsupported:' & WAAuth.JsonString(p_web.Translate('%WATxtOfferUnsupported')) & '}});' & |
+    ' netwebauthn.offer();' & |
+    '} armiStart(); })();' & p_web.CRLF & '</script>' & p_web.CRLF)
+
+ARMiEnrollService  Routine
+  #INSERT(%ARMiInit)
+  if p_web.GetSessionLoggedIn() = 0
+    waOut = '{"ok":0,"err":"login"}'
+  else
+    waUser = clip(%WAUserKey)
+    waMode = lower(p_web.GetValue('_wa_'))
+    case waMode
+    of 'ropts'
+      waChal = WAAuth.NewChallenge()
+      p_web.SetSessionValue('_wa_chal_',clip(waChal))
+      waOut = WAAuth.RegistrationOptions(clip(waChal),clip(waUser))
+    of 'rverify'
+      waChal = p_web.GetSessionValue('_wa_chal_')
+      p_web.DeleteSessionValue('_wa_chal_')
+      waDev = p_web.GetValue('dev')
+      if WAAuth.VerifyRegistration(clip(waChal),clip(p_web.GetValue('id')),clip(p_web.GetValue('cdj')),clip(p_web.GetValue('ad')),clip(p_web.GetValue('pk')),clip(waUser),clip(waDev)) = WA:Ok
+        p_web.AddLog('fingerprint activated for ' & clip(waUser))
+        waOut = '{"ok":1}'
+      else
+        p_web.AddLog('fingerprint activation refused: ' & WAAuth.LastErrorText)
+        waOut = '{"ok":0,"err":"enroll"}'
+      end
+    else
+      waOut = '{"ok":0,"err":"mode"}'
+    end
+  end
+  #INSERT(%ARMiReply)
+#ENDAT
